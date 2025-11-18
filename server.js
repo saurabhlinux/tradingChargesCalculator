@@ -37,7 +37,7 @@ app.get("/price/:symbol", async (req, res) => {
 
     const response = await fetch(url);
     const json = await response.json();
-
+console.log(json);
     const price = json?.chart?.result?.[0]?.meta?.regularMarketPrice ?? null;
 
     return res.json({ symbol, price });
@@ -49,4 +49,5 @@ app.get("/price/:symbol", async (req, res) => {
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`🚀 Server online at port ${PORT}`));
+
 
