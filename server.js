@@ -32,7 +32,7 @@ app.get("/price/:symbol", async (req, res) => {
     }
 
 
-    const url = `https://query1.finance.yahoo.com/v8/finance/chart/${idx}?interval=1m}`;
+    const url = `https://query1.finance.yahoo.com/v8/finance/chart/${idx}?interval=1m`;
 
 
     const response = await fetch(url);
@@ -49,6 +49,7 @@ console.log(json);
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`🚀 Server online at port ${PORT}`));
+
 
 
 
