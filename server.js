@@ -31,7 +31,9 @@ app.get("/price/:symbol", async (req, res) => {
       return res.status(400).json({ error: "Invalid symbol" });
     }
 
-    const url = `https://query1.finance.yahoo.com/v8/finance/chart/${idx}?interval=1m`;
+
+    const url = `https://query1.finance.yahoo.com/v8/finance/chart/${idx}?interval=1m&_=${Date.now()}`;
+
 
     const response = await fetch(url);
     const json = await response.json();
@@ -47,3 +49,4 @@ app.get("/price/:symbol", async (req, res) => {
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log(`🚀 Server online at port ${PORT}`));
+
