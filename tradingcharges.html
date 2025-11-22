@@ -1,0 +1,385 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+<link rel="icon" type="image/png" href="accounting.png">
+
+  <title>Trading Charges Dashboard</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <style>
+    body{font-family:Inter,system-ui,Roboto,Arial;background:#0b1220;color:#e6eef6;padding:12px}
+    .card{background:#071022;border:1px solid rgba(255,255,255,0.04);padding:12px;border-radius:8px;max-width:900px;margin:0 auto}
+    h2{margin:0 0 8px 0}
+    .muted{color:#97a6b6;font-size:12px;margin-bottom:8px}
+    table{width:100%;border-collapse:collapse;font-family:monospace;margin-top:6px}
+    th,td{padding:8px;border:1px solid rgba(255,255,255,0.03);text-align:left}
+    th{background:rgba(255,255,255,0.02)}
+    .right{text-align:right}
+
+  .muted {
+    display: inline-block;
+    margin-right: 10px; /* optional spacing */
+  }
+  </style>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/crypto-js/4.1.1/crypto-js.min.js"></script>
+</head>
+<body>
+  <div class="card">
+    <h2>Trading Charges Dashboard</h2>
+    
+
+
+
+    <table id="resultTable" aria-label="results">
+      <thead>
+        <tr>
+          <th>NAME</th>
+          <th class="right">PRICE</th>
+          <th class="right">CHARGES</th>
+          <th class="right">ATR20</th>
+          <th class="right">SCORE</th>
+        </tr>
+      </thead>
+      <tbody id="tbody"></tbody>
+    </table>
+   
+
+<div class="muted" id="lastDelta">Delta Last: --</div>
+<div class="muted" id="lastNSE">NSE Last: --</div>
+<div class="muted" id="lastYahoo">US Last: --</div>
+
+  </div>
+
+<script>
+async function fetchIndex(symbol) {
+
+
+const url = `https://tradingchargescalculator.onrender.com/price/${symbol}?t=${Date.now()}`;
+
+
+
+  try {
+   const res = await fetch(url, { cache: "no-store" });
+
+    const data = await res.json();
+    // data is array of quote objects
+const price = data?.price ?? 0;
+
+
+
+    let charges = 5, atr = 100;
+    if (symbol === "NAS100") { charges = 3.5; atr = 70; }
+
+    const score = price ? (atr * 100) / price : NaN;
+    return { name: symbol, price, atr, charges, score };
+  } catch (err) {
+    console.error("fetchIndex FMP error:", err);
+    return { name: symbol, price: NaN, atr: NaN, charges: NaN, score: NaN };
+  }
+}
+
+
+let deltaRows = [];
+
+
+const nseCalculatedRows = {};
+let lastDelta = [];
+document.addEventListener("DOMContentLoaded", () => {
+
+window.addEventListener("message", (ev) => {
+    // Security check: only accept messages from your TM window
+    
+    if (!ev.data || ev.data.type !== "instrument_rows") return;
+
+    const rows = ev.data.rows;
+    // console.log("Received:", rows);
+    handleIncomingRows(rows);
+});
+
+   
+});
+
+
+
+function handleIncomingRows(rows) {
+// clear previous NSE data
+    // optional: keep deltaRows
+const lfNSE = document.getElementById('lastNSE');
+if (lfNSE) lfNSE.textContent = 'NSE Last: ' + new Date().toLocaleTimeString();
+
+    Object.keys(nseCalculatedRows).forEach(k => delete nseCalculatedRows[k]);
+    for (const r of rows){
+        if (!r || !r.name) continue;
+        nseCalculatedRows[r.name] = {
+            name: String(r.name),
+            price: Number(r.price || 0),
+            charges: Number(r.charges || 0),
+            atr: Number(r.atr || 0),
+            score: Number(r.score || 0)
+        };
+    }
+
+    renderMergedTable();  // <- new function to merge NSE + Delta
+}
+
+function renderMergedTable() {
+    const combined = [
+        ...Object.values(nseCalculatedRows),
+        ...deltaRows
+    ];
+
+    combined.sort((a, b) =>
+        (isFinite(a.score) ? a.score : 1e9) - (isFinite(b.score) ? b.score : 1e9)
+    );
+
+    const tbody = document.getElementById('tbody');
+    tbody.innerHTML = '';
+    for (const r of combined) {
+        const tr = document.createElement('tr');
+        tr.innerHTML = `
+          <td style="font-family:monospace">${escapeHtml(r.name)}</td>
+          <td class="right">${isFinite(r.price) ? Number(r.price).toFixed(2) : '--'}</td>
+          <td class="right">${isFinite(r.charges) ? Number(r.charges).toFixed(2) : '--'}</td>
+          <td class="right">${isFinite(r.atr) ? Number(r.atr).toFixed(2) : '--'}</td>
+          <td class="right">${isFinite(r.score) ? Number(r.score).toFixed(2) : '--'}</td>
+        `;
+        tbody.appendChild(tr);
+    }
+}
+
+/* ====== Configuration: put your API key/secret here ====== */
+const DELTA_API_KEY = "apikey"; // replace if needed
+const DELTA_API_SECRET = "apisecret"; // replace if needed
+
+const BASE_URL = "https://api.india.delta.exchange";
+const PRODUCT_ID = 3136;   // ETH product id (as in your script)
+const POLL_SEC = 30;
+const USE_AUTH = false;     // use embedded API key/secret for signing requests
+
+/* ====== Crypto helper (signature format same as your userscript) ====== */
+function nowSeconds(){ return Math.floor(Date.now()/1000); }
+function buildSignature(method, endpoint, bodyStr=''){
+  const timestamp = String(nowSeconds());
+  const message = method.toUpperCase() + timestamp + endpoint + (bodyStr || '');
+  const signature = CryptoJS.HmacSHA256(message, DELTA_API_SECRET).toString(CryptoJS.enc.Hex);
+  return { signature, timestamp };
+}
+
+/* ====== Fetch wrapper ====== */
+async function deltaFetch(endpoint, method="GET", body=null, useAuth=USE_AUTH){
+  const base = BASE_URL.replace(/\/$/,'');
+  const url = base + endpoint;
+  const bodyStr = body ? JSON.stringify(body) : "";
+  const headers = { "Content-Type": "application/json" };
+
+  if (useAuth && DELTA_API_KEY && DELTA_API_SECRET){
+    const { signature, timestamp } = buildSignature(method, endpoint, bodyStr);
+    headers['api-key'] = DELTA_API_KEY;
+    headers['signature'] = signature;
+    headers['timestamp'] = timestamp;
+  }
+
+  try {
+    const res = await fetch(url, { method, headers, body: bodyStr || undefined });
+    const json = await res.json();
+    return { ok: res.ok, status: res.status, body: json };
+  } catch (e){
+    return { ok: false, error: String(e) };
+  }
+}
+
+/* ====== Utilities (copied from your logic) ====== */
+function getSpreadCost(o){
+  if (!o?.quotes) return 0;
+  const ask = Number(o.quotes.best_ask || 0);
+  const bid = Number(o.quotes.best_bid || 0);
+  const cv = Number(o.contract_value || 0) || 1;
+  return Math.abs(ask - bid) * cv;
+}
+function getFutureSpread(fut){
+  const ask = Number(fut?.quotes?.best_ask || 0);
+  const bid = Number(fut?.quotes?.best_bid || 0);
+  const lot = Number(fut?.contract_value || 1);
+  return Math.abs(ask - bid) * lot;
+}
+function parseExpiry(symbol){
+  return symbol?.split("-").pop();
+}
+function parseExpiryDate(exp){
+  if(!exp) return new Date(9999,0,1);
+  if(/^\d{6}$/.test(exp)){
+    const dd = exp.slice(0,2), mm = exp.slice(2,4), yy = exp.slice(4,6);
+    return new Date(2000 + Number(yy), Number(mm)-1, Number(dd));
+  }
+  const d = new Date(exp);
+  if(!isNaN(d)) return d;
+  return new Date(9999,0,1);
+}
+function escapeHtml(s){
+  if (s === null || s === undefined) return '';
+  return String(s).replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;');
+}
+
+/* ====== Core: compute rows using the same formulas from your userscript ====== */
+function computeDisplayFromList(list){
+  const rows = [];
+  const fut = list.find(x => x.symbol === "ETHUSD") || null;
+  const spot = parseFloat(fut?.spot_price || 0);
+
+  // options that are call/put for ETH
+  const options = (list || []).filter(x =>
+    (x.contract_type === "call_options" || x.contract_type === "put_options") &&
+    (x.underlying_asset_symbol === "ETH")
+  );
+
+  if (!options.length){
+    if (fut) {
+      const futMark = Number(fut?.mark_price || fut?.last_price || 0);
+      const futContractValue = Number(fut?.contract_value || 1);
+      const futCharges = futMark ? ((futMark * futContractValue * 0.001 * 1.18) + (getFutureSpread(fut))) : 0;
+      const futATR = futMark && futContractValue ? (20 * (((futMark) * futContractValue * 0.001 * 1.18) + getFutureSpread(fut)) / futContractValue) : 0;
+      const futScore = futMark ? ((futATR * 100) / futMark) : 0;
+      rows.push({ name: "ETH FUT", price: futMark, charges: futCharges, atr: futATR, score: futScore });
+    }
+    return rows;
+  }
+
+  // group options by expiry and pick nearest expiry
+  const expiryGroups = {};
+  for (const o of options) {
+    const exp = parseExpiry(o.symbol || o.identifier || "");
+    if (!expiryGroups[exp]) expiryGroups[exp] = [];
+    expiryGroups[exp].push(o);
+  }
+
+  const nearestExpiry = Object.keys(expiryGroups).sort((a,b) => parseExpiryDate(a) - parseExpiryDate(b))[0];
+  const nearestOptions = expiryGroups[nearestExpiry] || options;
+
+  const calls = nearestOptions.filter(x => x.contract_type === "call_options");
+  const puts  = nearestOptions.filter(x => x.contract_type === "put_options");
+
+  function findATM(list){
+    if(!list || !list.length) return null;
+    return list.reduce((best,o) => {
+      if(!best) return o;
+      const bestStrike = Number(best.strike_price || best.strike || 0);
+      const oStrike = Number(o.strike_price || o.strike || 0);
+      return Math.abs(oStrike - spot) < Math.abs(bestStrike - spot) ? o : best;
+    }, list[0]);
+  }
+
+  const atmCall = findATM(calls);
+  const atmPut  = findATM(puts);
+
+  // EXACT formulas from your userscript
+  const callCharge = atmCall ? (Math.min(Number(atmCall.mark_price || atmCall.last_price || 0) * 0.1 * (Number(atmCall.contract_value) || 1), (Number(fut?.spot_price) || 0) * 0.0003 * (Number(atmCall.contract_value) || 1)) * 1.18) : 0;
+  const putCharge  = atmPut  ? (Math.min(Number(atmPut.mark_price || atmPut.last_price || 0)  * 0.1 * (Number(atmPut.contract_value) || 1), (Number(fut?.spot_price) || 0) * 0.0003 * (Number(atmPut.contract_value) || 1)) * 1.18) : 0;
+
+  const callATR = atmCall ? ((20 * callCharge) / (Number(atmCall.contract_value) || 1)) : 0;
+  const putATR  = atmPut  ? ((20 * putCharge)  / (Number(atmPut.contract_value)  || 1)) : 0;
+
+  // FUT formulas (matching original)
+  const futMark = Number(fut?.mark_price || fut?.last_price || 0);
+  const futContractValue = Number(fut?.contract_value || 1);
+  const futCharges = futMark ? ((futMark * futContractValue * 0.001 * 1.18) + (getFutureSpread(fut))) : 0;
+  const futATR = futMark && futContractValue ? (20 * (((futMark) * futContractValue * 0.001 * 1.18) + (getFutureSpread(fut))) / futContractValue) : 0;
+  const futScore = futMark ? ((futATR * 100) / futMark) : 0;
+
+  // push FUT row first
+  if (fut) {
+    rows.push({
+      name: "ETH FUT",
+      price: futMark,
+      charges: futCharges,
+      atr: futATR,
+      score: futScore
+    });
+  }
+
+  // ATM CALL row
+  if (atmCall) {
+    const spreadCost = getSpreadCost(atmCall);
+    const totalATR = callATR + ((spreadCost * 20) / (Number(atmCall.contract_value) || 1));
+    const score = atmCall.mark_price ? ((totalATR * 100) / Number(atmCall.mark_price)) : 0;
+    rows.push({
+      name: atmCall.symbol || "CALL_ATM",
+      price: Number(atmCall.mark_price || atmCall.last_price || 0),
+      charges: callCharge,
+      atr: totalATR,
+      score
+    });
+  }
+
+  // ATM PUT row
+  if (atmPut) {
+    const spreadCost = getSpreadCost(atmPut);
+    const totalATR = putATR + ((spreadCost * 20) / (Number(atmPut.contract_value) || 1));
+    const score = atmPut.mark_price ? ((totalATR * 100) / Number(atmPut.mark_price)) : 0;
+    rows.push({
+      name: atmPut.symbol || "PUT_ATM",
+      price: Number(atmPut.mark_price || atmPut.last_price || 0),
+      charges: putCharge,
+      atr: totalATR,
+      score
+    });
+  }
+
+  return rows;
+}
+
+/* ====== Render table (formatting matches your original toFixed usage) ====== */
+function render(rows){
+  const tbody = document.getElementById('tbody');
+  tbody.innerHTML = '';
+  for (const r of rows){
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td style="font-family:monospace">${escapeHtml(r.name)}</td>
+      <td class="right">${isFinite(r.price) ? Number(r.price).toFixed(2) : '--'}</td>
+      <td class="right">${isFinite(r.charges) ? Number(r.charges).toFixed(2) : '--'}</td>
+      <td class="right">${isFinite(r.atr) ? Number(r.atr).toFixed(2) : '--'}</td>
+      <td class="right">${isFinite(r.score) ? Number(r.score).toFixed(2) : '--'}</td>
+    `;
+    tbody.appendChild(tr);
+  }
+}
+
+/* ====== Polling loop ====== */
+let pollHandle = null;
+async function fetchAndShow(){
+  const pid = PRODUCT_ID;
+  const endpoint = `/v2/tickers?product_id=${pid}`;
+  const resp = await deltaFetch(endpoint, "GET", null, USE_AUTH);
+const lfDelta = document.getElementById('lastDelta');
+if (lfDelta) lfDelta.textContent = 'Delta Last: ' + new Date().toLocaleTimeString();
+
+  if (!resp.ok){
+    // silent fail (no UI log)
+    return;
+  }
+
+  const list = resp.body?.result || [];
+ deltaRows = computeDisplayFromList(list);  // save delta data
+const us30 = await fetchIndex("US30");
+const nas100 = await fetchIndex("NAS100");
+
+const lfYahoo = document.getElementById('lastYahoo');
+if (lfYahoo) lfYahoo.textContent = 'Yahoo Last: ' + new Date().toLocaleTimeString();
+
+
+deltaRows.push(us30, nas100);
+
+renderMergedTable();                        // render merged table
+const lf = document.getElementById('lastFetch');
+if (lf) lf.textContent = 'last: ' + new Date().toLocaleString();
+}
+
+// start right away and set interval
+fetchAndShow();
+pollHandle = setInterval(fetchAndShow, POLL_SEC * 1000);
+
+</script>
+
+
+</body>
+</html>
